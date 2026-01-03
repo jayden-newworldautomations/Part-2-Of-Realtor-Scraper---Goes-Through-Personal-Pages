@@ -1,0 +1,458 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// REALTOR.COM AGENT PROFILE ENRICHER - CONSOLE VERSION
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Paste this into the console on an agent's profile page to extract their
+// social media links and other details.
+//
+// COMMANDS:
+//   enricher.test()        - Test extraction (preview only)
+//   enricher.send()        - Extract and send to webhook
+//   enricher.status()      - Show what was found
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const enricher = {
+
+    config: {
+        webhookUrl: "https://n8n.srv976231.hstgr.cloud/webhook/8ee77e9e-14d9-45de-b464-c6f7ddffd8bd",
+    },
+
+    lastExtraction: null,
+
+    log(message, type = 'info') {
+        const prefix = {
+            'info': '📋',
+            'success': '✅',
+            'warn': '⚠️',
+            'error': '❌',
+            'social': '📱',
+        }[type] || '•';
+        console.log(`${prefix} ${message}`);
+    },
+
+    extractAgentId(url) {
+        const match = url.match(/realestateagents\/([a-f0-9]{20,})/i);
+        return match ? match[1] : null;
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAIN EXTRACTION FUNCTION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Realtor.com's own social accounts - FILTER THESE OUT
+    realtorSocials: [
+        'facebook.com/realtor.com',
+        'facebook.com/realtordotcom',
+        'twitter.com/realtordotcom',
+        'twitter.com/realtor.com',
+        'x.com/realtordotcom',
+        'linkedin.com/company/realtor-com',
+        'linkedin.com/company/realtor.com',
+        'instagram.com/realtordotcom',
+        'instagram.com/realtor.com',
+        'youtube.com/user/realtordotcom',
+        'youtube.com/realtordotcom',
+        'pinterest.com/realtordotcom',
+    ],
+
+    isRealtorSocial(url) {
+        if (!url) return false;
+        const lowerUrl = url.toLowerCase();
+        return this.realtorSocials.some(blocked => lowerUrl.includes(blocked));
+    },
+
+    extract() {
+        const data = {
+            agentId: this.extractAgentId(window.location.href),
+            profileUrl: window.location.href,
+            name: '',
+            phone: '',
+            email: '',
+            brokerage: '',
+            instagram: '',
+            facebook: '',
+            linkedin: '',
+            twitter: '',
+            youtube: '',
+            website: '',
+            rating: '',
+            reviews: '',
+            salesLast12Months: '',
+            priceRange: '',
+            experience: '',
+            scrapedAt: new Date().toISOString(),
+        };
+
+        const pageText = document.body.innerText || '';
+
+        // ─────────────────────────────────────────────────────────────────
+        // NAME
+        // ─────────────────────────────────────────────────────────────────
+        const h1 = document.querySelector('h1');
+        if (h1) {
+            data.name = h1.innerText.trim().split('\n')[0];
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // PHONE
+        // ─────────────────────────────────────────────────────────────────
+        const phoneLink = document.querySelector('a[href^="tel:"]');
+        if (phoneLink) {
+            const digits = phoneLink.getAttribute('href').replace(/\D/g, '').slice(-10);
+            if (digits.length === 10) {
+                data.phone = `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`;
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // EMAIL
+        // ─────────────────────────────────────────────────────────────────
+        const emailLink = document.querySelector('a[href^="mailto:"]');
+        if (emailLink) {
+            data.email = emailLink.getAttribute('href').replace('mailto:', '').split('?')[0];
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // SOCIAL MEDIA - Filter out Realtor.com's own accounts!
+        // ─────────────────────────────────────────────────────────────────
+
+        // Helper to get link if not Realtor.com's
+        const getSocialLink = (selector, urlPattern) => {
+            const links = document.querySelectorAll(selector);
+            for (const link of links) {
+                const href = link.getAttribute('href');
+                if (href && !this.isRealtorSocial(href)) {
+                    return href;
+                }
+            }
+            return '';
+        };
+
+        // Instagram
+        const instaIcons = document.querySelectorAll('[data-testid="icon-social-insta"]');
+        for (const icon of instaIcons) {
+            const link = icon.closest('a');
+            if (link && !this.isRealtorSocial(link.href)) {
+                data.instagram = link.getAttribute('href');
+                break;
+            }
+        }
+        if (!data.instagram) {
+            data.instagram = getSocialLink('a[href*="instagram.com"]');
+        }
+
+        // Facebook
+        const fbIcons = document.querySelectorAll('[data-testid="icon-social-facebook"]');
+        for (const icon of fbIcons) {
+            const link = icon.closest('a');
+            if (link && !this.isRealtorSocial(link.href)) {
+                data.facebook = link.getAttribute('href');
+                break;
+            }
+        }
+        if (!data.facebook) {
+            data.facebook = getSocialLink('a[href*="facebook.com"]');
+        }
+
+        // LinkedIn
+        const liIcons = document.querySelectorAll('[data-testid="icon-social-linkedin"]');
+        for (const icon of liIcons) {
+            const link = icon.closest('a');
+            if (link && !this.isRealtorSocial(link.href)) {
+                data.linkedin = link.getAttribute('href');
+                break;
+            }
+        }
+        if (!data.linkedin) {
+            data.linkedin = getSocialLink('a[href*="linkedin.com"]');
+        }
+
+        // Twitter/X
+        const twIcons = document.querySelectorAll('[data-testid="icon-social-twitter"]');
+        for (const icon of twIcons) {
+            const link = icon.closest('a');
+            if (link && !this.isRealtorSocial(link.href)) {
+                data.twitter = link.getAttribute('href');
+                break;
+            }
+        }
+        if (!data.twitter) {
+            const twLinks = document.querySelectorAll('a[href*="twitter.com"], a[href*="x.com"]');
+            for (const link of twLinks) {
+                if (!this.isRealtorSocial(link.href)) {
+                    data.twitter = link.getAttribute('href');
+                    break;
+                }
+            }
+        }
+
+        // YouTube
+        const ytIcons = document.querySelectorAll('[data-testid="icon-social-youtube"]');
+        for (const icon of ytIcons) {
+            const link = icon.closest('a');
+            if (link && !this.isRealtorSocial(link.href)) {
+                data.youtube = link.getAttribute('href');
+                break;
+            }
+        }
+        if (!data.youtube) {
+            const ytLinks = document.querySelectorAll('a[href*="youtube.com"]');
+            for (const link of ytLinks) {
+                if (!this.isRealtorSocial(link.href)) {
+                    data.youtube = link.getAttribute('href');
+                    break;
+                }
+            }
+        }
+
+        // Website
+        const webIcon = document.querySelector('[data-testid="icon-social-web"]');
+        if (webIcon) {
+            const link = webIcon.closest('a');
+            if (link) data.website = link.getAttribute('href');
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // BROKERAGE
+        // ─────────────────────────────────────────────────────────────────
+        const brokerageEl = document.querySelector('[data-testid="agent-brokerage"]') ||
+                           document.querySelector('[class*="brokerage"]');
+        if (brokerageEl) {
+            data.brokerage = brokerageEl.innerText.trim();
+        }
+        if (!data.brokerage) {
+            const brokerageMatch = pageText.match(/(?:with|at)\s+((?:Keller Williams|RE\/MAX|REMAX|Coldwell Banker|Century 21|Berkshire Hathaway|Compass|[Ee][Xx][Pp]\s+Realty|Redfin|Sotheby's|Better Homes|Allen Tate|Howard Hanna)[^,\n]*)/i);
+            if (brokerageMatch) data.brokerage = brokerageMatch[1].trim();
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // RATING & REVIEWS - Use specific data-testid
+        // ─────────────────────────────────────────────────────────────────
+        const ratingEl = document.querySelector('[data-testid="avatar-reviews"]') ||
+                        document.querySelector('h2[data-testid="avatar-reviews"]');
+        if (ratingEl) {
+            const ratingText = ratingEl.innerText.trim();
+            if (/^\d\.?\d?$/.test(ratingText)) {
+                data.rating = ratingText;
+            }
+        }
+        if (!data.rating) {
+            // Fallback: look for rating pattern in page
+            const ratingMatch = pageText.match(/(\d\.\d)\s*(?:out of|stars?|\/\s*5)/i);
+            if (ratingMatch) data.rating = ratingMatch[1];
+        }
+
+        // Reviews count
+        const reviewMatch = pageText.match(/(\d+)\s*reviews?/i);
+        if (reviewMatch) data.reviews = reviewMatch[1];
+
+        // ─────────────────────────────────────────────────────────────────
+        // SALES LAST 12 MONTHS - Look for specific patterns
+        // ─────────────────────────────────────────────────────────────────
+        const salesPatterns = [
+            /(\d+)\s*sales?\s*in\s*(?:the\s*)?last\s*12\s*months?/i,
+            /(\d+)\s*(?:recent\s*)?sales?\s*(?:last\s*)?(?:12\s*)?(?:mo|months?)/i,
+            /last\s*12\s*months?[:\s]*(\d+)/i,
+            /recent\s*sales?[:\s]*(\d+)/i,
+        ];
+        for (const pattern of salesPatterns) {
+            const match = pageText.match(pattern);
+            if (match) {
+                data.salesLast12Months = match[1];
+                break;
+            }
+        }
+
+        const priceMatch = pageText.match(/\$[\d,.]+[KkMm]?\s*[-–]\s*\$[\d,.]+[KkMm]?/);
+        if (priceMatch) data.priceRange = priceMatch[0];
+
+        const expMatch = pageText.match(/(\d+)\s*years?\s*(?:of\s*)?experience/i);
+        if (expMatch) data.experience = expMatch[1] + ' years';
+
+        this.lastExtraction = data;
+        return data;
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TEST - Preview extraction without sending
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    test() {
+        console.clear();
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('   AGENT PROFILE EXTRACTION TEST');
+        console.log('═══════════════════════════════════════════════════════════\n');
+
+        const data = this.extract();
+
+        console.log('👤 BASIC INFO:');
+        console.log(`   Name:       ${data.name || '❌ Not found'}`);
+        console.log(`   Phone:      ${data.phone || '❌ Not found'}`);
+        console.log(`   Email:      ${data.email || '❌ Not found'}`);
+        console.log(`   Brokerage:  ${data.brokerage || '❌ Not found'}`);
+        console.log('');
+
+        console.log('⭐ STATS:');
+        console.log(`   Rating:     ${data.rating || 'N/A'} (${data.reviews || '0'} reviews)`);
+        console.log(`   Sales:      ${data.salesLast12Months || 'N/A'} in last 12 months`);
+        console.log(`   Price Range: ${data.priceRange || 'N/A'}`);
+        console.log(`   Experience: ${data.experience || 'N/A'}`);
+        console.log('');
+
+        console.log('📱 SOCIAL MEDIA:');
+        console.log(`   📸 Instagram: ${data.instagram || '❌ Not found'}`);
+        console.log(`   📘 Facebook:  ${data.facebook || '❌ Not found'}`);
+        console.log(`   💼 LinkedIn:  ${data.linkedin || '❌ Not found'}`);
+        console.log(`   🐦 Twitter:   ${data.twitter || '❌ Not found'}`);
+        console.log(`   🎬 YouTube:   ${data.youtube || '❌ Not found'}`);
+        console.log(`   🌐 Website:   ${data.website || '❌ Not found'}`);
+        console.log('');
+
+        const socialCount = [data.instagram, data.facebook, data.linkedin, data.twitter, data.youtube, data.website]
+            .filter(Boolean).length;
+
+        if (socialCount > 0) {
+            console.log(`✅ Found ${socialCount} social media link(s)!`);
+        } else {
+            console.log('⚠️ No social media found on this profile');
+        }
+
+        console.log('\n───────────────────────────────────────────────────────────');
+        console.log('Run enricher.send() to send this data to the webhook');
+        console.log('───────────────────────────────────────────────────────────\n');
+
+        return data;
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SEND - Extract and send to webhook
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    async send() {
+        console.log('📤 Extracting and sending to webhook...\n');
+
+        const data = this.extract();
+
+        try {
+            const response = await fetch(this.config.webhookUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    agent: data,
+                    metadata: {
+                        timestamp: new Date().toISOString(),
+                        source: 'console_enricher',
+                    }
+                }),
+            });
+
+            if (response.ok) {
+                console.log('✅ SUCCESS! Data sent to webhook.\n');
+                this.status();
+                return true;
+            } else {
+                console.log(`❌ Webhook returned status: ${response.status}`);
+                return false;
+            }
+        } catch (e) {
+            console.log(`❌ Error: ${e.message}`);
+            return false;
+        }
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STATUS - Show last extraction
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    status() {
+        if (!this.lastExtraction) {
+            console.log('No extraction yet. Run enricher.test() first.');
+            return;
+        }
+
+        const d = this.lastExtraction;
+        const socialCount = [d.instagram, d.facebook, d.linkedin, d.twitter, d.youtube, d.website]
+            .filter(Boolean).length;
+
+        console.log(`
+╔══════════════════════════════════════════════════════════════════╗
+║                    LAST EXTRACTION                               ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Agent:    ${(d.name || 'Unknown').padEnd(53)}║
+║  ID:       ${(d.agentId || 'N/A').slice(0, 53).padEnd(53)}║
+║  Social:   ${(socialCount + ' links found').padEnd(53)}║
+╚══════════════════════════════════════════════════════════════════╝
+        `);
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DEBUG - Show all potential social elements on page
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    debug() {
+        console.log('🔍 DEBUGGING - Looking for social media elements...\n');
+
+        // Check for data-testid attributes
+        const testIds = document.querySelectorAll('[data-testid*="social"], [data-testid*="icon"]');
+        console.log(`Found ${testIds.length} elements with social/icon data-testid:`);
+        testIds.forEach(el => {
+            const testId = el.getAttribute('data-testid');
+            const parent = el.closest('a');
+            const href = parent ? parent.getAttribute('href') : 'no parent link';
+            console.log(`  • ${testId} → ${href}`);
+        });
+
+        console.log('');
+
+        // Check for social media links
+        const socialPatterns = ['instagram', 'facebook', 'linkedin', 'twitter', 'youtube', 'x.com'];
+        socialPatterns.forEach(pattern => {
+            const links = document.querySelectorAll(`a[href*="${pattern}"]`);
+            if (links.length > 0) {
+                console.log(`Found ${links.length} ${pattern} link(s):`);
+                links.forEach(link => {
+                    console.log(`  • ${link.getAttribute('href')}`);
+                });
+            }
+        });
+
+        console.log('');
+
+        // Check for SVG icons
+        const svgs = document.querySelectorAll('svg');
+        const socialSvgs = Array.from(svgs).filter(svg => {
+            const testId = svg.getAttribute('data-testid') || '';
+            return testId.includes('social') || testId.includes('insta') ||
+                   testId.includes('facebook') || testId.includes('linkedin') ||
+                   testId.includes('twitter') || testId.includes('youtube');
+        });
+        console.log(`Found ${socialSvgs.length} social media SVG icons`);
+        socialSvgs.forEach(svg => {
+            const parent = svg.closest('a');
+            console.log(`  • ${svg.getAttribute('data-testid')} → ${parent?.href || 'no link'}`);
+        });
+    },
+};
+
+window.enricher = enricher;
+
+console.log(`
+╔══════════════════════════════════════════════════════════════════╗
+║                                                                  ║
+║         AGENT PROFILE ENRICHER - CONSOLE VERSION                 ║
+║                                                                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  COMMANDS:                                                       ║
+║    enricher.test()    - Preview extraction (no send)             ║
+║    enricher.send()    - Extract & send to webhook                ║
+║    enricher.debug()   - Debug: show all social elements          ║
+║    enricher.status()  - Show last extraction                     ║
+║                                                                  ║
+╚══════════════════════════════════════════════════════════════════╝
+`);
+
+// Auto-test on load
+console.log('🔄 Auto-testing extraction...\n');
+enricher.test();
