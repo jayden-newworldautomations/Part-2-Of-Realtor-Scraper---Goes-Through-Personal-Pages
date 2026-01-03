@@ -1,0 +1,894 @@
+// ==UserScript==
+// @name         Realtor Agent Enricher - PRODUCTION v2.0
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  Production-ready agent profile enricher with bulletproof filtering
+// @author       You
+// @match        https://www.realtor.com/realestateagents/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRODUCTION ENRICHER v2.0 - Runs all night, bulletproof filtering
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const enricher = {
+        version: '2.0',
+        
+        config: {
+            webhookUrl: 'https://n8n.srv976231.hstgr.cloud/webhook/8ee77e9e-14d9-45de-b464-c6f7ddffd8bd',
+            
+            // Storage keys
+            storageKey: 'realtor_enricher_queue',
+            processedKey: 'realtor_enricher_processed',
+            stateKey: 'realtor_enricher_state',
+            statsKey: 'realtor_enricher_stats',
+            
+            // ═══════════════════════════════════════════════════════════
+            // HUMAN-LIKE TIMING - Randomized to avoid detection
+            // ═══════════════════════════════════════════════════════════
+            minPageDelay: 4000,       // Min time on page before extract
+            maxPageDelay: 8000,       // Max time on page
+            minNavDelay: 3000,        // Min delay before navigation
+            maxNavDelay: 7000,        // Max delay before navigation
+            
+            // Micro-pauses (random small delays during extraction)
+            microPauseChance: 0.3,    // 30% chance of micro-pause
+            microPauseMin: 500,
+            microPauseMax: 2000,
+            
+            // Reading simulation (scroll around like reading)
+            simulateReading: true,
+            readingScrolls: 3,        // Number of scroll actions
+            
+            // ═══════════════════════════════════════════════════════════
+            // BREAK SYSTEM - Prevents detection during long runs
+            // ═══════════════════════════════════════════════════════════
+            shortBreakEvery: 25,      // Short break every N agents
+            shortBreakMin: 20000,     // 20-40 seconds
+            shortBreakMax: 40000,
+            
+            mediumBreakEvery: 100,    // Medium break every N agents
+            mediumBreakMin: 60000,    // 1-3 minutes
+            mediumBreakMax: 180000,
+            
+            longBreakEvery: 500,      // Long break every N agents
+            longBreakMin: 300000,     // 5-10 minutes
+            longBreakMax: 600000,
+            
+            // ═══════════════════════════════════════════════════════════
+            // ERROR HANDLING - Keeps running through issues
+            // ═══════════════════════════════════════════════════════════
+            maxConsecutiveErrors: 10,
+            errorRetryDelayMin: 5000,
+            errorRetryDelayMax: 15000,
+            
+            // Auto-save interval (prevents data loss)
+            autoSaveInterval: 30000,  // Save state every 30s
+        },
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // BULLETPROOF REALTOR.COM FILTER - Nothing gets through!
+        // ═══════════════════════════════════════════════════════════════════════════
+        
+        blockedPatterns: [
+            // Realtor.com social accounts
+            'facebook.com/realtor.com',
+            'facebook.com/realtordotcom',
+            'facebook.com/realtor',
+            'twitter.com/realtordotcom',
+            'twitter.com/realtor_com',
+            'twitter.com/realtor',
+            'x.com/realtordotcom',
+            'x.com/realtor',
+            'linkedin.com/company/realtor-com',
+            'linkedin.com/company/realtor.com',
+            'linkedin.com/company/realtor',
+            'instagram.com/realtordotcom',
+            'instagram.com/realtor.com',
+            'instagram.com/realtor',
+            'youtube.com/user/realtordotcom',
+            'youtube.com/realtordotcom',
+            'youtube.com/realtor',
+            'youtube.com/c/realtor',
+            'pinterest.com/realtordotcom',
+            'pinterest.com/realtor',
+            'tiktok.com/@realtordotcom',
+            'tiktok.com/@realtor',
+            
+            // Realtor.com domains
+            'realtor.com',
+            'move.com',
+            'opcity.com',
+            
+            // Common false positives
+            '/share',
+            '/sharer',
+            'intent/tweet',
+            'shareArticle',
+        ],
+        
+        blockedEmails: [
+            'realtor.com',
+            'move.com',
+            'opcity.com',
+            'support@',
+            'info@',
+            'help@',
+            'contact@',
+            'noreply@',
+            'no-reply@',
+        ],
+
+        isBlockedUrl(url) {
+            if (!url) return true;
+            const lowerUrl = url.toLowerCase();
+            return this.blockedPatterns.some(pattern => lowerUrl.includes(pattern.toLowerCase()));
+        },
+
+        isBlockedEmail(email) {
+            if (!email) return true;
+            const lowerEmail = email.toLowerCase();
+            return this.blockedEmails.some(pattern => lowerEmail.includes(pattern.toLowerCase()));
+        },
+
+        // Clean and validate URL
+        cleanSocialUrl(url) {
+            if (!url || this.isBlockedUrl(url)) return '';
+            // Remove tracking parameters
+            try {
+                const urlObj = new URL(url);
+                urlObj.search = '';
+                return urlObj.toString();
+            } catch {
+                return url;
+            }
+        },
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // STORAGE MANAGEMENT
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        getQueue() {
+            try {
+                return JSON.parse(localStorage.getItem(this.config.storageKey) || '[]');
+            } catch (e) {
+                return [];
+            }
+        },
+
+        saveQueue(queue) {
+            localStorage.setItem(this.config.storageKey, JSON.stringify(queue));
+        },
+
+        getProcessed() {
+            try {
+                return JSON.parse(localStorage.getItem(this.config.processedKey) || '[]');
+            } catch (e) {
+                return [];
+            }
+        },
+
+        saveProcessed(processed) {
+            if (processed.length > 30000) {
+                processed = processed.slice(-30000);
+            }
+            localStorage.setItem(this.config.processedKey, JSON.stringify(processed));
+        },
+
+        getState() {
+            try {
+                return JSON.parse(localStorage.getItem(this.config.stateKey) || '{}');
+            } catch (e) {
+                return {};
+            }
+        },
+
+        saveState(state) {
+            localStorage.setItem(this.config.stateKey, JSON.stringify(state));
+        },
+
+        getStats() {
+            try {
+                return JSON.parse(localStorage.getItem(this.config.statsKey) || '{}');
+            } catch (e) {
+                return {};
+            }
+        },
+
+        saveStats(stats) {
+            localStorage.setItem(this.config.statsKey, JSON.stringify(stats));
+        },
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // URL LOADING
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        loadUrls(urls) {
+            const queue = this.getQueue();
+            const processed = this.getProcessed();
+            let added = 0;
+            let skipped = 0;
+
+            urls.forEach(url => {
+                const match = url.match(/realestateagents\/([a-f0-9]+)/i);
+                if (match) {
+                    const agentId = match[1];
+                    const cleanUrl = `https://www.realtor.com/realestateagents/${agentId}`;
+                    
+                    if (!queue.includes(cleanUrl) && !processed.includes(agentId)) {
+                        queue.push(cleanUrl);
+                        added++;
+                    } else {
+                        skipped++;
+                    }
+                }
+            });
+
+            this.saveQueue(queue);
+            this.log(`✅ Added ${added} URLs | Skipped ${skipped} duplicates | Queue: ${queue.length}`);
+            return added;
+        },
+
+        loadFromSheet(text) {
+            const urls = text
+                .replace(/\r/g, '')
+                .split('\n')
+                .map(s => s.trim())
+                .filter(s => s.includes('realestateagents'));
+            return this.loadUrls(urls);
+        },
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // HUMAN-LIKE BEHAVIOR
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        async delay(min, max) {
+            const ms = Math.floor(Math.random() * (max - min + 1)) + min;
+            return new Promise(resolve => setTimeout(resolve, ms));
+        },
+
+        async microPause() {
+            if (Math.random() < this.config.microPauseChance) {
+                await this.delay(this.config.microPauseMin, this.config.microPauseMax);
+            }
+        },
+
+        async simulateReading() {
+            if (!this.config.simulateReading) return;
+            
+            for (let i = 0; i < this.config.readingScrolls; i++) {
+                const scrollAmount = Math.floor(Math.random() * 300) + 100;
+                const direction = Math.random() > 0.3 ? 1 : -1; // 70% scroll down
+                
+                window.scrollBy({
+                    top: scrollAmount * direction,
+                    behavior: 'smooth'
+                });
+                
+                await this.delay(800, 2000);
+            }
+            
+            // Scroll back to top
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            await this.delay(500, 1000);
+        },
+
+        async randomMouseMove() {
+            // Simulate mouse movement by triggering events
+            const x = Math.floor(Math.random() * window.innerWidth);
+            const y = Math.floor(Math.random() * window.innerHeight);
+            
+            const event = new MouseEvent('mousemove', {
+                clientX: x,
+                clientY: y,
+                bubbles: true
+            });
+            document.dispatchEvent(event);
+        },
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // DATA EXTRACTION - With bulletproof filtering
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        extractAgentData() {
+            const pageText = document.body.innerText || '';
+            const agentId = window.location.pathname.match(/realestateagents\/([a-f0-9]+)/i)?.[1] || '';
+
+            // Name
+            let name = '';
+            const h1 = document.querySelector('h1');
+            if (h1) {
+                name = h1.innerText.trim().split('\n')[0].replace(/\s+/g, ' ');
+            }
+
+            // Phone
+            let phone = '';
+            const phoneLink = document.querySelector('a[href^="tel:"]');
+            if (phoneLink) {
+                const digits = phoneLink.getAttribute('href').replace(/\D/g, '').slice(-10);
+                if (digits.length === 10) {
+                    phone = `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`;
+                }
+            }
+
+            // Email - FILTERED
+            let email = '';
+            const emailLink = document.querySelector('a[href^="mailto:"]');
+            if (emailLink) {
+                const rawEmail = emailLink.getAttribute('href').replace('mailto:', '').split('?')[0].trim();
+                if (!this.isBlockedEmail(rawEmail)) {
+                    email = rawEmail;
+                }
+            }
+
+            // Brokerage
+            let brokerage = '';
+            const brokerageEl = document.querySelector('[data-testid="text-agent-group-name"]');
+            if (brokerageEl) {
+                brokerage = brokerageEl.innerText.trim();
+            }
+
+            // Rating
+            let rating = '';
+            const ratingEl = document.querySelector('[data-testid="avatar-reviews"]');
+            if (ratingEl) {
+                const ratingMatch = ratingEl.innerText.match(/[\d.]+/);
+                if (ratingMatch) rating = ratingMatch[0];
+            }
+
+            // Reviews
+            let reviews = '';
+            const reviewMatch = pageText.match(/(\d+)\s*reviews?/i);
+            if (reviewMatch) reviews = reviewMatch[1];
+
+            // Sales
+            let salesLast12Months = '';
+            const salesPatterns = [
+                /(\d+)\s*sales?\s*in\s*(?:the\s*)?last\s*12\s*months?/i,
+                /(\d+)\s*transactions?\s*in\s*(?:the\s*)?last\s*12\s*months?/i,
+                /last\s*12\s*months?[:\s]*(\d+)/i,
+            ];
+            for (const pattern of salesPatterns) {
+                const match = pageText.match(pattern);
+                if (match) {
+                    salesLast12Months = match[1];
+                    break;
+                }
+            }
+
+            // Price range
+            let priceRange = '';
+            const priceMatch = pageText.match(/\$[\d,.]+[kKmM]?\s*[-–]\s*\$[\d,.]+[kKmM]?/);
+            if (priceMatch) priceRange = priceMatch[0];
+
+            // Experience
+            let experience = '';
+            const expMatch = pageText.match(/(\d+)\s*years?\s*(?:of\s*)?experience/i);
+            if (expMatch) experience = `${expMatch[1]} years`;
+
+            // ═══════════════════════════════════════════════════════════
+            // SOCIAL MEDIA - BULLETPROOF FILTERING
+            // ═══════════════════════════════════════════════════════════
+            
+            let instagram = '', facebook = '', linkedin = '', twitter = '', youtube = '', website = '';
+            
+            const socialLinks = document.querySelectorAll('a[href]');
+            
+            socialLinks.forEach(link => {
+                const href = link.href;
+                if (!href || this.isBlockedUrl(href)) return;
+                
+                const lowerHref = href.toLowerCase();
+                
+                if (lowerHref.includes('instagram.com/') && !instagram) {
+                    // Make sure it's a profile, not a share link
+                    if (!lowerHref.includes('/share') && !lowerHref.includes('/p/')) {
+                        instagram = this.cleanSocialUrl(href);
+                    }
+                } else if (lowerHref.includes('facebook.com/') && !facebook) {
+                    if (!lowerHref.includes('/sharer') && !lowerHref.includes('/share')) {
+                        facebook = this.cleanSocialUrl(href);
+                    }
+                } else if (lowerHref.includes('linkedin.com/') && !linkedin) {
+                    if (!lowerHref.includes('/shareArticle')) {
+                        linkedin = this.cleanSocialUrl(href);
+                    }
+                } else if ((lowerHref.includes('twitter.com/') || lowerHref.includes('x.com/')) && !twitter) {
+                    if (!lowerHref.includes('/intent') && !lowerHref.includes('/share')) {
+                        twitter = this.cleanSocialUrl(href);
+                    }
+                } else if (lowerHref.includes('youtube.com/') && !youtube) {
+                    youtube = this.cleanSocialUrl(href);
+                }
+            });
+
+            // Website
+            const websiteIcon = document.querySelector('[data-testid="icon-social-web"]');
+            if (websiteIcon) {
+                const parentLink = websiteIcon.closest('a');
+                if (parentLink && !this.isBlockedUrl(parentLink.href)) {
+                    website = this.cleanSocialUrl(parentLink.href);
+                }
+            }
+
+            // Specialties
+            let specialties = '';
+            const allParagraphs = document.querySelectorAll('p');
+            for (const p of allParagraphs) {
+                const text = p.innerText || '';
+                if (text.includes('•') && 
+                    (text.includes('Buyer') || text.includes('Seller') || 
+                     text.includes('Residential') || text.includes('Investor'))) {
+                    specialties = text.split('•').map(s => s.trim()).filter(s => s.length > 0 && s.length < 50).join(', ');
+                    break;
+                }
+            }
+
+            // Service areas
+            let serviceAreas = '';
+            const bulletLists = document.querySelectorAll('[data-testid="bullet-list"]');
+            for (const list of bulletLists) {
+                const text = list.innerText || '';
+                if (!text.includes('Buyer') && !text.includes('Seller') && text.includes('•')) {
+                    serviceAreas = text.split('•').map(s => s.trim()).filter(s => s.length > 0).join(', ');
+                    break;
+                }
+            }
+
+            return {
+                agentId,
+                profileUrl: window.location.href,
+                name,
+                phone,
+                email,
+                brokerage,
+                rating,
+                reviews,
+                salesLast12Months,
+                priceRange,
+                experience,
+                instagram,
+                facebook,
+                linkedin,
+                twitter,
+                youtube,
+                website,
+                specialties,
+                serviceAreas,
+                scrapedAt: new Date().toISOString(),
+                enriched: 'TRUE',
+            };
+        },
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // WEBHOOK
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        async sendToWebhook(data) {
+            try {
+                const response = await fetch(this.config.webhookUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data),
+                });
+                return response.ok;
+            } catch (e) {
+                this.log(`❌ Webhook error: ${e.message}`, 'error');
+                return false;
+            }
+        },
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // MAIN PROCESSING
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        async processCurrentPage() {
+            // Check if stopped
+            if (!this.getState().running) return false;
+            
+            const agentId = window.location.pathname.match(/realestateagents\/([a-f0-9]+)/i)?.[1];
+            
+            if (!agentId) {
+                this.log('⚠️ Not on agent profile page');
+                return false;
+            }
+
+            const processed = this.getProcessed();
+            if (processed.includes(agentId)) {
+                this.log(`⏭️ Already processed, skipping...`);
+                return true;
+            }
+
+            // Simulate human reading behavior
+            await this.simulateReading();
+            if (!this.getState().running) return false; // Check after simulation
+            
+            await this.microPause();
+            
+            // Random delay before extraction
+            await this.delay(this.config.minPageDelay, this.config.maxPageDelay);
+            if (!this.getState().running) return false; // Check after delay
+            
+            this.log(`📊 Extracting: ${agentId.slice(0, 8)}...`);
+
+            const data = this.extractAgentData();
+            
+            // Another micro-pause
+            await this.microPause();
+            await this.randomMouseMove();
+            
+            if (!this.getState().running) return false; // Check before send
+            
+            const success = await this.sendToWebhook(data);
+
+            if (success) {
+                this.log(`✅ ${data.name || 'Agent'} | IG:${data.instagram ? '✓' : '✗'} FB:${data.facebook ? '✓' : '✗'} LI:${data.linkedin ? '✓' : '✗'}`);
+                processed.push(agentId);
+                this.saveProcessed(processed);
+
+                const stats = this.getStats();
+                stats.success = (stats.success || 0) + 1;
+                stats.total = (stats.total || 0) + 1;
+                this.saveStats(stats);
+
+                return true;
+            } else {
+                this.log(`❌ Failed to send`, 'error');
+                const stats = this.getStats();
+                stats.failed = (stats.failed || 0) + 1;
+                stats.total = (stats.total || 0) + 1;
+                this.saveStats(stats);
+                return false;
+            }
+        },
+
+        async takeBreakIfNeeded() {
+            const stats = this.getStats();
+            const count = stats.total || 0;
+            
+            if (count > 0 && count % this.config.longBreakEvery === 0) {
+                const duration = Math.floor(Math.random() * (this.config.longBreakMax - this.config.longBreakMin) + this.config.longBreakMin);
+                this.log(`🛏️ Long break: ${Math.round(duration/60000)}min (after ${count} agents)`);
+                // Break into smaller chunks so we can check state
+                const chunks = Math.ceil(duration / 10000);
+                for (let i = 0; i < chunks; i++) {
+                    if (!this.getState().running) return;
+                    await this.delay(10000, 10500);
+                }
+                
+            } else if (count > 0 && count % this.config.mediumBreakEvery === 0) {
+                const duration = Math.floor(Math.random() * (this.config.mediumBreakMax - this.config.mediumBreakMin) + this.config.mediumBreakMin);
+                this.log(`☕ Medium break: ${Math.round(duration/60000)}min`);
+                const chunks = Math.ceil(duration / 10000);
+                for (let i = 0; i < chunks; i++) {
+                    if (!this.getState().running) return;
+                    await this.delay(10000, 10500);
+                }
+                
+            } else if (count > 0 && count % this.config.shortBreakEvery === 0) {
+                const duration = Math.floor(Math.random() * (this.config.shortBreakMax - this.config.shortBreakMin) + this.config.shortBreakMin);
+                this.log(`⏸️ Short break: ${Math.round(duration/1000)}s`);
+                const chunks = Math.ceil(duration / 5000);
+                for (let i = 0; i < chunks; i++) {
+                    if (!this.getState().running) return;
+                    await this.delay(5000, 5500);
+                }
+            }
+        },
+
+        async goToNext() {
+            // CHECK IF STOPPED - Don't navigate if stopped
+            if (!this.getState().running) {
+                this.log('⏹️ Stopped - not navigating');
+                return;
+            }
+            
+            const queue = this.getQueue();
+            
+            if (queue.length === 0) {
+                this.log('🎉 ALL DONE! Queue complete.');
+                this.saveState({ running: false });
+                this.status();
+                return;
+            }
+
+            // Take break if needed (check stop after each break)
+            await this.takeBreakIfNeeded();
+            
+            // CHECK AGAIN after break
+            if (!this.getState().running) {
+                this.log('⏹️ Stopped during break');
+                return;
+            }
+
+            const nextUrl = queue.shift();
+            this.saveQueue(queue);
+
+            this.log(`➡️ Next agent (${queue.length.toLocaleString()} remaining)`);
+            
+            // Human-like delay before navigation
+            await this.delay(this.config.minNavDelay, this.config.maxNavDelay);
+            
+            // FINAL CHECK before navigation
+            if (!this.getState().running) {
+                // Put URL back in queue since we didn't process it
+                const q = this.getQueue();
+                q.unshift(nextUrl);
+                this.saveQueue(q);
+                this.log('⏹️ Stopped - URL returned to queue');
+                return;
+            }
+            
+            window.location.href = nextUrl;
+        },
+
+        async run() {
+            // IMMEDIATE CHECK - Don't do anything if stopped
+            if (!this.isRunning()) {
+                this.log('⏹️ Enricher is stopped');
+                return;
+            }
+
+            const isAgentPage = /realestateagents\/[a-f0-9]+$/i.test(window.location.pathname);
+            
+            if (!isAgentPage) {
+                this.log('⚠️ Not on agent page');
+                return;
+            }
+
+            try {
+                // Check before processing
+                if (!this.isRunning()) return;
+                
+                const success = await this.processCurrentPage();
+                
+                // Check after processing
+                if (!this.isRunning()) {
+                    this.log('⏹️ Stopped after processing');
+                    return;
+                }
+
+                let state = this.getState();
+                if (success) {
+                    state.consecutiveErrors = 0;
+                } else {
+                    state.consecutiveErrors = (state.consecutiveErrors || 0) + 1;
+                    
+                    if (state.consecutiveErrors >= this.config.maxConsecutiveErrors) {
+                        this.log('🛑 Too many errors, pausing...', 'error');
+                        this.log('💡 Run enricher.start() to resume', 'warn');
+                        this.saveState({ ...state, running: false });
+                        return;
+                    }
+                }
+
+                this.saveState({ ...state, running: true });
+                
+                // Final check before navigation
+                if (!this.isRunning()) return;
+                
+                await this.goToNext();
+                
+            } catch (error) {
+                this.log(`❌ Error: ${error.message}`, 'error');
+                
+                // Check if stopped during error
+                if (!this.isRunning()) return;
+                
+                let state = this.getState();
+                state.consecutiveErrors = (state.consecutiveErrors || 0) + 1;
+                this.saveState(state);
+                
+                // Wait and retry (checking state during wait)
+                const waitTime = Math.random() * (this.config.errorRetryDelayMax - this.config.errorRetryDelayMin) + this.config.errorRetryDelayMin;
+                const chunks = Math.ceil(waitTime / 2000);
+                for (let i = 0; i < chunks; i++) {
+                    if (!this.isRunning()) return;
+                    await this.delay(2000, 2100);
+                }
+                
+                if (this.isRunning() && state.consecutiveErrors < this.config.maxConsecutiveErrors) {
+                    await this.goToNext();
+                }
+            }
+        },
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // EASY CONTROLS
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        start() {
+            const queue = this.getQueue();
+            
+            if (queue.length === 0) {
+                this.log('⚠️ Queue empty! Load URLs first:');
+                this.log('   enricher.loadFromSheet(`url1\\nurl2\\nurl3`)');
+                return;
+            }
+
+            let stats = this.getStats();
+            if (!stats.startTime) {
+                stats = { total: 0, success: 0, failed: 0, startTime: new Date().toISOString() };
+                this.saveStats(stats);
+            }
+
+            this.saveState({ running: true, consecutiveErrors: 0 });
+            
+            console.clear();
+            this.log('🚀 ENRICHER STARTED');
+            this.log(`📋 Queue: ${queue.length.toLocaleString()} agents`);
+            this.log('💡 To stop: enricher.stop()');
+            this.log('═══════════════════════════════════════════════════════════');
+            
+            setTimeout(() => this.run(), 3000);
+        },
+
+        stop() {
+            this.saveState({ running: false, stopped: true });
+            console.clear();
+            console.log('\n');
+            console.log('╔═══════════════════════════════════════════════════════════╗');
+            console.log('║              ⏹️  ENRICHER STOPPED                          ║');
+            console.log('╠═══════════════════════════════════════════════════════════╣');
+            console.log('║  The scraper will stop after the current operation.       ║');
+            console.log('║  If on a break, it will stop within 10 seconds.           ║');
+            console.log('║                                                           ║');
+            console.log('║  To resume: enricher.start()                              ║');
+            console.log('╚═══════════════════════════════════════════════════════════╝\n');
+            this.status();
+        },
+
+        // Alias for easy typing
+        go() { this.start(); },
+        pause() { this.stop(); },
+        
+        // Check if running (helper)
+        isRunning() {
+            return this.getState().running === true;
+        },
+
+        status() {
+            const queue = this.getQueue();
+            const processed = this.getProcessed();
+            const state = this.getState();
+            const stats = this.getStats();
+
+            console.log('\n');
+            console.log('╔═══════════════════════════════════════════════════════════╗');
+            console.log('║           REALTOR ENRICHER v2.0 - STATUS                  ║');
+            console.log('╠═══════════════════════════════════════════════════════════╣');
+            console.log(`║  Status:     ${state.running ? '🟢 RUNNING              ' : '🔴 STOPPED              '}             ║`);
+            console.log(`║  Queue:      ${String(queue.length.toLocaleString()).padEnd(20)}              ║`);
+            console.log(`║  Processed:  ${String(processed.length.toLocaleString()).padEnd(20)}              ║`);
+            console.log(`║  Success:    ${String(stats.success || 0).padEnd(20)}              ║`);
+            console.log(`║  Failed:     ${String(stats.failed || 0).padEnd(20)}              ║`);
+            
+            if (stats.startTime && stats.total > 0) {
+                const elapsed = (Date.now() - new Date(stats.startTime).getTime()) / 1000;
+                const rate = stats.total / (elapsed / 60);
+                const eta = queue.length / rate;
+                console.log(`║  Rate:       ${String(rate.toFixed(1) + ' agents/min').padEnd(20)}              ║`);
+                console.log(`║  ETA:        ${String('~' + this.formatTime(eta * 60)).padEnd(20)}              ║`);
+            }
+            
+            console.log('╠═══════════════════════════════════════════════════════════╣');
+            console.log('║  Commands: start() stop() status() test() help()         ║');
+            console.log('╚═══════════════════════════════════════════════════════════╝\n');
+        },
+
+        test() {
+            const data = this.extractAgentData();
+            console.log('\n═══════════════════════════════════════════════════════════');
+            console.log('   EXTRACTION TEST (not sent)');
+            console.log('═══════════════════════════════════════════════════════════');
+            console.log(`   Name:        ${data.name || '❌'}`);
+            console.log(`   Phone:       ${data.phone || '❌'}`);
+            console.log(`   Email:       ${data.email || '❌'}`);
+            console.log(`   Brokerage:   ${data.brokerage || '❌'}`);
+            console.log(`   Rating:      ${data.rating || '❌'} (${data.reviews || '0'} reviews)`);
+            console.log(`   Sales:       ${data.salesLast12Months || '❌'} last 12mo`);
+            console.log(`   Price:       ${data.priceRange || '❌'}`);
+            console.log('   ─────────────────────────────────────────────────────────');
+            console.log(`   📸 Instagram: ${data.instagram || '❌'}`);
+            console.log(`   📘 Facebook:  ${data.facebook || '❌'}`);
+            console.log(`   💼 LinkedIn:  ${data.linkedin || '❌'}`);
+            console.log(`   🐦 Twitter:   ${data.twitter || '❌'}`);
+            console.log(`   🎬 YouTube:   ${data.youtube || '❌'}`);
+            console.log(`   🌐 Website:   ${data.website || '❌'}`);
+            console.log('   ─────────────────────────────────────────────────────────');
+            console.log(`   Specialties: ${data.specialties || '❌'}`);
+            console.log(`   Areas:       ${data.serviceAreas || '❌'}`);
+            console.log('═══════════════════════════════════════════════════════════\n');
+            return data;
+        },
+
+        reset() {
+            if (confirm('⚠️ Clear ALL data? This cannot be undone.')) {
+                localStorage.removeItem(this.config.storageKey);
+                localStorage.removeItem(this.config.processedKey);
+                localStorage.removeItem(this.config.stateKey);
+                localStorage.removeItem(this.config.statsKey);
+                this.log('🗑️ All data cleared');
+            }
+        },
+
+        clearQueue() {
+            localStorage.removeItem(this.config.storageKey);
+            this.log('🗑️ Queue cleared (processed history kept)');
+        },
+
+        help() {
+            console.log(`
+╔═══════════════════════════════════════════════════════════╗
+║           REALTOR ENRICHER v2.0 - HELP                    ║
+╠═══════════════════════════════════════════════════════════╣
+║                                                           ║
+║  📥 LOAD URLS:                                            ║
+║     enricher.loadFromSheet(\`url1\\nurl2\\nurl3\`)           ║
+║                                                           ║
+║  ▶️ CONTROLS:                                              ║
+║     enricher.start()  or  enricher.go()                   ║
+║     enricher.stop()   or  enricher.pause()                ║
+║     enricher.status()                                     ║
+║     enricher.test()                                       ║
+║                                                           ║
+║  🗑️ DATA:                                                  ║
+║     enricher.reset()       - Clear everything             ║
+║     enricher.clearQueue()  - Clear queue only             ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+            `);
+        },
+
+        formatTime(seconds) {
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+            const hours = Math.floor(seconds / 3600);
+            const mins = Math.round((seconds % 3600) / 60);
+            return `${hours}h ${mins}m`;
+        },
+
+        log(message, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            const prefix = `[${time}]`;
+            
+            if (type === 'error') {
+                console.error(`${prefix} ${message}`);
+            } else if (type === 'warn') {
+                console.warn(`${prefix} ${message}`);
+            } else {
+                console.log(`${prefix} ${message}`);
+            }
+        },
+    };
+
+    // Make globally accessible
+    window.enricher = enricher;
+
+    // Auto-run if state says running
+    setTimeout(() => {
+        const state = enricher.getState();
+        if (state.running) {
+            enricher.log('🔄 Auto-resuming...');
+            enricher.run();
+        } else {
+            console.log('\n');
+            console.log('╔═══════════════════════════════════════════════════════════╗');
+            console.log('║        🔍 REALTOR ENRICHER v2.0 READY                     ║');
+            console.log('╠═══════════════════════════════════════════════════════════╣');
+            console.log('║  enricher.start()   - Start processing                    ║');
+            console.log('║  enricher.stop()    - Stop processing                     ║');
+            console.log('║  enricher.status()  - Check progress                      ║');
+            console.log('║  enricher.test()    - Test current page                   ║');
+            console.log('║  enricher.help()    - All commands                        ║');
+            console.log('╚═══════════════════════════════════════════════════════════╝\n');
+            enricher.status();
+        }
+    }, 2500);
+
+})();
